@@ -4,11 +4,13 @@ struct Point {
 }
 
 fn main() {
+    let p0 = 1.1;
     let p1 = 1;
     let p2 = 2;
     let p3 = p1 + p2;
     let mut p4 = Point { x: p3, y: 3 };
     p4.x += p3;
+    let p5 = p0 + 1.1;
 
-    println!("Point coordinates: ({}, {})", p4.x, p4.y);
+    println!("Point coordinates: ({}, {}), float: {}", p4.x, p4.y, p5);
 }

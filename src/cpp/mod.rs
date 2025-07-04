@@ -7,3 +7,8 @@ pub mod project;
 pub mod typ;
 pub mod structs;
 pub mod enums;
+pub mod statements;
+pub mod ops;
+pub mod variables;
+pub mod value;
+pub mod constants;

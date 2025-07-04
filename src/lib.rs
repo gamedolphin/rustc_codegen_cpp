@@ -1,10 +1,14 @@
 #![feature(rustc_private)]
 #![feature(box_patterns)]
 #![feature(let_chains)]
+#![feature(f16)]
+#![feature(f128)]
+#![feature(slice_as_array)]
 
 extern crate rustc_abi;
 extern crate rustc_ast;
 extern crate rustc_codegen_ssa;
+extern crate rustc_const_eval;
 extern crate rustc_data_structures;
 extern crate rustc_driver;
 extern crate rustc_hash;

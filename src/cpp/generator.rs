@@ -1,10 +1,16 @@
 use rustc_hash::FxHashSet as HashSet;
 
-use super::{function::FunctionSignature, project::Project, structs::get_struct_name, typ::Type};
+use super::{
+    constants::Constant, function::FunctionSignature, project::Project, structs::get_struct_name,
+    typ::Type,
+};
 use crate::cpp::{
     enums::{get_enum_name, get_enum_variant_name, EnumVariant},
     fields::get_field_name,
+    ops::Op,
+    statements::Line,
     typ::{FloatType, IntType, UIntType},
+    value::Value,
 };
 
 pub struct ArgInfo {
@@ -209,10 +215,10 @@ pub fn get_arg_type(ty: &Type, proj: &Project, includes: &mut HashSet<String>) -
         Type::Float(float_type) => {
             includes.insert("<stdfloat>".to_string());
             match float_type {
-                FloatType::F16 => "float16_t",
-                FloatType::F32 => "float32_t",
-                FloatType::F64 => "float64_t",
-                FloatType::F128 => "float128_t",
+                FloatType::F16 => "std::float16_t",
+                FloatType::F32 => "float",
+                FloatType::F64 => "double",
+                FloatType::F128 => "std::float128_t",
             }
             .to_string()
         }
@@ -290,4 +296,210 @@ fn get_fn_pointer_name(hash: u128) -> String {
 
 fn get_closure_name(hash: u128) -> String {
     format!("closure_{hash:x}")
+}
+
+pub fn get_body(body: &[Vec<Line>]) -> String {
+    body.iter()
+        .map(|statements| {
+            statements
+                .iter()
+                .map(|line| match line {
+                    Line::Assignment { lhs, rhs } => {
+                        format!("// {lhs} = {};", get_value_string(rhs))
+                    }
+                    Line::Todo(todo) => format!("// Statement: {todo}"),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .enumerate()
+        .map(|(index, stmts)| format!("bb{index}:\n{stmts}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+pub fn get_value_string(val: &Value) -> String {
+    match val {
+        Value::Use(op) => get_op_string(op),
+        Value::Todo(output) => output.to_string(),
+    }
+}
+
+pub fn get_op_string(op: &Op) -> String {
+    match op {
+        Op::Constant(val) => val.to_string(),
+        Op::Copy(output) => output.to_string(),
+        Op::Move(output) => output.to_string(),
+    }
+}
+
+pub fn get_constant_definition(
+    name: &str,
+    constant: &Constant,
+    project: &Project,
+    includes: &mut HashSet<String>,
+) -> String {
+    let typ = get_arg_type(&constant.typ, project, includes);
+    let const_val = constant.value.clone();
+    match &constant.typ {
+        Type::Void => panic!("Cannot generate string for void type constant"),
+        Type::Bool => {
+            let value = u8::from_ne_bytes(const_val.try_into().unwrap());
+            let value = if value == 0 { "false" } else { "true" };
+            format!("constexpr {} {} = {};", typ.actual, name, value)
+        }
+        Type::Char => {
+            let char_value = u32::from_ne_bytes(const_val.try_into().unwrap());
+            format!(
+                "constexpr {} {} = '{}';",
+                typ.actual,
+                name,
+                char::from_u32(char_value).expect("Invalid char value")
+            )
+        }
+        Type::Int(int_type) => match int_type {
+            IntType::I8 => {
+                let value = i8::from_ne_bytes(
+                    u8::from_ne_bytes(const_val.try_into().unwrap()).to_ne_bytes(),
+                );
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+            IntType::I16 => {
+                let value = i16::from_ne_bytes(
+                    u16::from_ne_bytes(const_val.try_into().unwrap()).to_ne_bytes(),
+                );
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+            IntType::I32 => {
+                let value = i32::from_ne_bytes(
+                    u32::from_ne_bytes(const_val.try_into().expect(&format!(
+                        "expected val to be of length 4, but was {}, with size: {}",
+                        constant.value.len(),
+                        constant.size
+                    )))
+                    .to_ne_bytes(),
+                );
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+            IntType::I64 => {
+                let value = i64::from_ne_bytes(
+                    u64::from_ne_bytes(const_val.try_into().unwrap()).to_ne_bytes(),
+                );
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+            IntType::I128 => format!(
+                "constexpr {} {} = {};",
+                typ.actual,
+                name,
+                i128::from_ne_bytes(const_val.try_into().unwrap())
+            ),
+            IntType::Isize => {
+                let value = isize::from_ne_bytes(
+                    u64::from_ne_bytes(const_val.try_into().unwrap()).to_ne_bytes(),
+                );
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+        },
+        Type::UInt(uint_type) => match uint_type {
+            UIntType::U8 => {
+                let value = u8::from_ne_bytes(const_val.try_into().unwrap());
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+            UIntType::U16 => {
+                let value = u16::from_ne_bytes(const_val.try_into().unwrap());
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+            UIntType::U32 => {
+                let value = u32::from_ne_bytes(const_val.try_into().unwrap());
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+            UIntType::U64 => {
+                let value = u64::from_ne_bytes(const_val.try_into().unwrap());
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+            UIntType::U128 => {
+                format!(
+                    "constexpr {} {} = {};",
+                    typ.actual,
+                    name,
+                    u128::from_ne_bytes(const_val.try_into().unwrap())
+                )
+            }
+            UIntType::Usize => {
+                let value = usize::from_ne_bytes(
+                    u64::from_ne_bytes(const_val.try_into().unwrap()).to_ne_bytes(),
+                );
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+        },
+        Type::Float(float_type) => match float_type {
+            FloatType::F16 => {
+                includes.insert("<stdfloat>".to_string());
+                let value = f32::from_ne_bytes(
+                    u32::from_ne_bytes(const_val.try_into().unwrap()).to_ne_bytes(),
+                );
+                format!(
+                    "constexpr {} {} = {}; // F16 not supported",
+                    typ.actual, name, value
+                )
+            }
+            FloatType::F32 => {
+                let value = f32::from_ne_bytes(
+                    u32::from_ne_bytes(const_val.try_into().unwrap()).to_ne_bytes(),
+                );
+                format!("constexpr {} {} = {}; ", typ.actual, name, value)
+            }
+            FloatType::F64 => {
+                let value = f64::from_ne_bytes(
+                    (u64::from_ne_bytes(const_val.try_into().unwrap())).to_ne_bytes(),
+                );
+                format!("constexpr {} {} = {};", typ.actual, name, value)
+            }
+            FloatType::F128 => {
+                includes.insert("<stdfloat>".to_string());
+                format!(
+                    "constexpr {} {} = {}; // F128 not supported",
+                    typ.actual,
+                    name,
+                    f128::from_ne_bytes(const_val.try_into().unwrap()).is_finite()
+                )
+            }
+        },
+        Type::Struct(hash) => {
+            // get array of bytes
+            let bytes = const_val
+                .iter()
+                .map(|b| format!("{b:01x}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let bytes = format!("{{{bytes}}}");
+            let bytes_constexpr = format!(
+                "constexpr std::array<uint8_t, {}> {name}_bytes = {};",
+                constant.size, bytes
+            );
+
+            let struct_name = get_struct_name(*hash);
+            format!(
+                r#"
+{bytes_constexpr}
+constexpr {struct_name} {name} = std::bit_cast<{struct_name}>({name}_bytes);
+"#
+            )
+        }
+        _ => format!(
+            "// Cannot generate string for constant of type {:?} with value {:?}",
+            typ.actual, constant.value
+        ),
+        // Type::Closure(_) => todo!(),
+        // Type::Todo(_) => todo!(),
+        // Type::String => todo!(),
+        // Type::StringView => todo!(),
+        // Type::FnPtr(_) => todo!(),
+        // Type::RawPtr(_, _) => todo!(),
+        // Type::Struct(_) => todo!(),
+        // Type::Enum(_) => todo!(),
+        // Type::Array(_, _, _, _) => todo!(),
+        // Type::Span(_, _) => todo!(),
+        // Type::Tuple(items) => todo!(),
+    }
 }

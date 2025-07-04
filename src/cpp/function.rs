@@ -7,9 +7,12 @@ use rustc_middle::{
     },
 };
 
-use crate::cpp::typ::{get_type, get_type_hash, TypeVal};
+use crate::cpp::{
+    statements::get_line,
+    typ::{get_type, get_type_hash, TypeVal},
+};
 
-use super::{project::Project, typ::Type};
+use super::{project::Project, statements::Line, typ::Type};
 
 #[derive(Eq, Hash, PartialEq, Clone)]
 pub struct FunctionSignature {
@@ -21,17 +24,17 @@ pub struct FunctionSignature {
 pub struct Function {
     pub signature: FunctionSignature,
     pub locals: Vec<TypeVal>,
-    pub body: String,
+    pub body: Vec<Vec<Line>>,
 }
 
 pub struct FunctionContext<'tcx> {
     pub tcx: TyCtxt<'tcx>,
     pub instance: Instance<'tcx>,
-    pub body: Option<Body<'tcx>>,
+    pub body: Body<'tcx>,
 }
 
 impl<'tcx, 'proj> FunctionContext<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>, body: Option<Body<'tcx>>) -> Self {
+    pub fn new(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>, body: Body<'tcx>) -> Self {
         FunctionContext {
             tcx,
             instance,
@@ -127,7 +130,7 @@ pub fn add_function<'tcx>(
     }
 
     let mir = tcx.instance_mir(instance.def);
-    let ctx = FunctionContext::new(tcx, instance, Some(mir.clone()));
+    let ctx = FunctionContext::new(tcx, instance, mir.clone());
 
     // TODO: check if fn is magic
 
@@ -187,87 +190,22 @@ pub fn add_function<'tcx>(
     for (id, block) in mir.basic_blocks.iter_enumerated() {
         let mut statements = Vec::new();
         for statement in &block.statements {
-            let stmts = add_statement(statement, tcx, mir, &ctx, project);
+            let stmts = get_line(statement, tcx, &ctx, project);
             statements.extend(stmts);
         }
 
-        blocks.push((id, statements));
+        blocks.push(statements);
     }
 
     let func = Function {
         signature,
         locals,
-        body: blocks
-            .into_iter()
-            .map(|(id, statements)| {
-                let stmts = statements.join("\n");
-                format!("\nblock{}:\n{}\n", id.index(), stmts)
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
+        body: blocks,
     };
 
     project.functions.insert(name, func);
 
     Ok(())
-}
-
-pub fn add_statement<'tcx>(
-    stmt: &Statement<'tcx>,
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    fn_ctx: &FunctionContext<'tcx>,
-    project: &mut Project,
-) -> Vec<String> {
-    vec![format!("// Statement: {:?}", stmt)]
-
-    // match kind {
-    //     StatementKind::StorageLive(local) => vec![],
-    //     StatementKind::StorageDead(local) => vec![],
-    //     // for ex: let val = Enum::Variant;
-    //     StatementKind::SetDiscriminant {
-    //         place,
-    //         variant_index,
-    //     } => {
-    //         let owner_ty = place.ty(body, tcx).ty;
-    //         let owner_ty = fn_ctx.monomorphize(owner_ty);
-    //         let owner = get_type(project, tcx, fn_ctx.instance, fn_ctx, owner_ty);
-    //         let layout = fn_ctx.layout_of(owner_ty);
-    //         match &layout.variants {
-    //             Variants::Empty => vec![],
-    //             Variants::Single { index } => vec![],
-    //             Variants::Multiple { tag_encoding, .. } => {
-    //                 match tag_encoding {
-    //                     TagEncoding::Direct => {
-    //                         let tag_val = owner_ty
-    //                             .discriminant_for_variant(tcx, *variant_index)
-    //                             .expect("Failed to get discriminant value")
-    //                             .val;
-    //                     }
-    //                     TagEncoding::Niche {
-    //                         untagged_variant,
-    //                         niche_variants,
-    //                         niche_start,
-    //                     } => todo!(),
-    //                 }
-    //                 todo!()
-    //             }
-    //         }
-    //     }
-    //     StatementKind::Assign(_) => todo!(),
-    //     StatementKind::FakeRead(_) => todo!(),
-
-    //     StatementKind::Deinit(place) => todo!(),
-
-    //     StatementKind::Retag(retag_kind, place) => todo!(),
-    //     StatementKind::PlaceMention(place) => todo!(),
-    //     StatementKind::AscribeUserType(_, variance) => todo!(),
-    //     StatementKind::Coverage(coverage_kind) => todo!(),
-    //     StatementKind::Intrinsic(non_diverging_intrinsic) => todo!(),
-    //     StatementKind::ConstEvalCounter => todo!(),
-    //     StatementKind::Nop => todo!(),
-    //     StatementKind::BackwardIncompatibleDropHint { place, reason } => todo!(),
-    // }
 }
 
 pub fn get_fn_name<'tcx>(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>) -> String {

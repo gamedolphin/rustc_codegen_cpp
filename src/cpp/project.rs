@@ -14,15 +14,19 @@ use rustc_middle::ty::TypingEnv;
 use crate::cpp::closure::get_closure_type;
 use crate::cpp::function::FunctionSignature;
 use crate::cpp::generator::get_arg_type;
+use crate::cpp::generator::get_body;
+use crate::cpp::generator::get_constant_definition;
 use crate::cpp::generator::get_decl_type;
 use crate::cpp::typ::get_type;
 use crate::cpp::typ::sort_types;
 
 use super::closure::Closure;
+use super::constants::Constant;
 use super::enums::Enum;
 use super::function::add_function;
 use super::function::Function;
 use super::function::FunctionContext;
+use super::ops::get_constant_name;
 use super::structs::Strukt;
 use super::typ::get_type_hash;
 use super::typ::Type;
@@ -37,6 +41,7 @@ pub struct Project {
     pub closures: HashMap<u128, Closure>,
     pub strukts: HashMap<u128, Strukt>,
     pub enums: HashMap<u128, Enum>,
+    pub consts: HashMap<String, Constant>,
 }
 
 impl Project {
@@ -45,6 +50,23 @@ impl Project {
         self.typs.insert(hash, TypeVal { hash, ty });
 
         hash
+    }
+
+    pub fn add_constant<'tcx>(
+        &mut self,
+        tcx: TyCtxt<'tcx>,
+        actual: Ty<'tcx>,
+        value: Constant,
+    ) -> String {
+        let hash = get_type_hash(tcx, actual);
+        let constant_string = get_constant_name(hash, &value.value, value.size);
+
+        if self.consts.contains_key(&constant_string) {
+            return constant_string;
+        }
+
+        self.consts.insert(constant_string.clone(), value);
+        constant_string
     }
 
     pub fn add_closure(&mut self, hash: u128, closure: Closure) {
@@ -68,6 +90,11 @@ impl Project {
         }
         output.push("\n\n".to_string());
 
+        for (name, constant) in &self.consts {
+            output.push(get_constant_definition(name, constant, self, &mut includes));
+            output.push("\n".to_string());
+        }
+
         for (name, function) in &self.functions {
             let args = function
                 .signature
@@ -83,7 +110,7 @@ impl Project {
                 .join(", ");
             let return_type =
                 get_arg_type(&function.signature.return_type.ty, self, &mut includes).to_print("");
-            let body = &function.body;
+            let body = get_body(&function.body);
 
             let arg_count = function.signature.args.len();
             let locals = function
