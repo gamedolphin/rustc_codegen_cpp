@@ -8,3 +8,6 @@ crate-type = ["dylib"]
 
 [package.metadata.rust-analyzer]
 rustc_private = true
+
+[dependencies]
+topological-sort = "0.2.2"

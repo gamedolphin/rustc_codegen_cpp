@@ -12,15 +12,18 @@
     in
     {
       devShells = eachSystem (pkgs: {
-        default = pkgs.mkShell rec {
-          packages = with pkgs; [ nil ];
+        default = (pkgs.mkShell.override { stdenv = pkgs.clangStdenv; }) rec {
+          packages = with pkgs; [
+            nil
+            clang-tools
+          ];
           buildInputs = with pkgs; [
             rustup
             cmake
-            clang
             llvmPackages.bintools
             just
             rust-analyzer-unwrapped
+            bear
           ];
           nativeBuildInputs = with pkgs; [ pkg-config ];
 

@@ -1,3 +1,8 @@
 .direnv/
 target/
 *.private
+build/
+rustc-ice-*
+.cache/
+mir_dump/
+_cpp/
