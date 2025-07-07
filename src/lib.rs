@@ -4,6 +4,7 @@
 #![feature(f16)]
 #![feature(f128)]
 #![feature(slice_as_array)]
+#![feature(allocator_api)]
 
 extern crate rustc_abi;
 extern crate rustc_ast;

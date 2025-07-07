@@ -10,13 +10,14 @@ use crate::cpp::{
     constants::Constant,
     function::get_fn_name,
     typ::{get_type, Type, UIntType},
+    variables::get_variable,
 };
 
-use super::{function::FunctionContext, project::Project};
+use super::{function::FunctionContext, project::Project, variables::get_variable_type};
 
 pub enum Op {
     Constant(String),
-    Copy(String),
+    Copy(String, Type),
     Move(String),
 }
 
@@ -27,8 +28,11 @@ pub fn translate_operand<'tcx>(
 ) -> Op {
     // let operand_ty = fn_ctx.monomorphize(operand.ty(&fn_ctx.body, fn_ctx.tcx));
     match operand {
-        Operand::Copy(place) => Op::Copy(format!("Copy({:?})", place)),
-        Operand::Move(place) => Op::Move(format!("Move({:?})", place)),
+        Operand::Copy(place) => {
+            let typ = get_variable_type(place, fn_ctx, proj);
+            Op::Copy(get_variable(place, fn_ctx), typ)
+        }
+        Operand::Move(place) => Op::Move(get_variable(place, fn_ctx)),
         Operand::Constant(val) => {
             let constant = val.const_;
             let constant = fn_ctx.monomorphize(constant);
@@ -55,7 +59,10 @@ fn translate_scalar<'tcx>(
     project: &mut Project,
 ) -> Op {
     let ty = fn_ctx.monomorphize(ty);
+    let base_ty = get_type(project, fn_ctx.tcx, fn_ctx.instance, fn_ctx, ty);
+    let (cgen_type, typ) = base_ty.get_base_type(fn_ctx.tcx, project);
     let size = val.size();
+    let mut deps = vec![];
     let val = match val {
         Scalar::Int(int) => int.to_uint(size).to_ne_bytes()[0..size.bytes() as usize].to_vec(),
         Scalar::Ptr(pointer, size) => {
@@ -68,9 +75,40 @@ fn translate_scalar<'tcx>(
                 GlobalAlloc::Static(def_id) => todo!(),
                 GlobalAlloc::Memory(const_allocation) => {
                     let const_alloc = const_allocation.inner();
-                    let bytes: &[u8] = const_alloc
-                        .inspect_with_uninit_and_ptr_outside_interpreter(0..const_alloc.len());
-                    bytes.to_vec()
+                    if const_alloc.provenance().ptrs().len() == 0 {
+                        let bytes: &[u8] = const_alloc
+                            .inspect_with_uninit_and_ptr_outside_interpreter(0..const_alloc.len());
+                        bytes.to_vec()
+                    } else {
+                        let ptrs = const_alloc.provenance().ptrs();
+                        ptrs.iter().for_each(|(size, ptr)| {
+                            let data = fn_ctx.tcx.global_alloc(ptr.alloc_id());
+                            if let GlobalAlloc::Memory(data) = data {
+                                let data = data.inner();
+                                let bytes: &[u8] = data
+                                    .inspect_with_uninit_and_ptr_outside_interpreter(0..data.len());
+                                let bytes = bytes.to_vec();
+                                let hash = project.add_type(fn_ctx.tcx, typ, cgen_type.clone());
+                                let arr = Type::Array(
+                                    hash,
+                                    data.len() as u64,
+                                    size.bytes(),
+                                    data.align.bytes(),
+                                );
+                                let constant = Constant {
+                                    typ: arr,
+                                    value: bytes.to_vec(),
+                                    size: data.len() as u64,
+                                    deps: vec![],
+                                };
+                                let hash = project.add_constant(fn_ctx.tcx, ty, constant);
+                                deps.push(hash.clone());
+                            } else {
+                                panic!("Expected memory allocation for pointer!")
+                            }
+                        });
+                        vec![]
+                    }
                 }
             }
         }
@@ -81,9 +119,10 @@ fn translate_scalar<'tcx>(
         typ: const_type,
         value: val,
         size: size.bytes(),
+        deps,
     };
 
-    Op::Constant(project.add_constant(fn_ctx.tcx, ty, constant.clone()))
+    Op::Constant(project.add_constant(fn_ctx.tcx, ty, constant))
 }
 
 pub fn get_constant_name(hash: u128, value: &[u8], size: u64) -> String {

@@ -5,4 +5,5 @@ pub struct Constant {
     pub typ: Type,
     pub value: Vec<u8>,
     pub size: u64,
+    pub deps: Vec<String>,
 }

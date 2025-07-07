@@ -17,6 +17,7 @@ use crate::cpp::generator::get_arg_type;
 use crate::cpp::generator::get_body;
 use crate::cpp::generator::get_constant_definition;
 use crate::cpp::generator::get_decl_type;
+use crate::cpp::inbuilts::get_inbuilt_functions;
 use crate::cpp::typ::get_type;
 use crate::cpp::typ::sort_types;
 
@@ -42,12 +43,20 @@ pub struct Project {
     pub strukts: HashMap<u128, Strukt>,
     pub enums: HashMap<u128, Enum>,
     pub consts: HashMap<String, Constant>,
+    pub sorted_consts: Vec<String>,
 }
 
 impl Project {
     pub fn add_type<'tcx>(&mut self, tcx: TyCtxt<'tcx>, actual: Ty<'tcx>, ty: Type) -> u128 {
         let hash = get_type_hash(tcx, actual);
-        self.typs.insert(hash, TypeVal { hash, ty });
+        self.typs.insert(
+            hash,
+            TypeVal {
+                hash,
+                ty,
+                debug: Some(format!("{:?}", actual)),
+            },
+        );
 
         hash
     }
@@ -64,7 +73,7 @@ impl Project {
         if self.consts.contains_key(&constant_string) {
             return constant_string;
         }
-
+        self.sorted_consts.push(constant_string.clone());
         self.consts.insert(constant_string.clone(), value);
         constant_string
     }
@@ -90,7 +99,8 @@ impl Project {
         }
         output.push("\n\n".to_string());
 
-        for (name, constant) in &self.consts {
+        for name in &self.sorted_consts {
+            let constant = self.consts.get(name).unwrap();
             output.push(get_constant_definition(name, constant, self, &mut includes));
             output.push("\n".to_string());
         }
@@ -110,18 +120,21 @@ impl Project {
                 .join(", ");
             let return_type =
                 get_arg_type(&function.signature.return_type.ty, self, &mut includes).to_print("");
-            let body = get_body(&function.body);
+            let body = get_body(&function.body, &mut includes);
 
             let arg_count = function.signature.args.len();
             let locals = function
                 .locals
                 .iter()
                 .enumerate()
-                .filter(|(index, _)| *index == 0 || *index > arg_count)
                 .filter(|(_, ty)| !matches!(&ty.ty, Type::Void))
-                .map(|(index, ty)| {
+                .map(|(mut index, ty)| {
                     let decl = get_arg_type(&ty.ty, self, &mut includes).actual;
-                    format!("{decl} _{index};")
+                    if index != 0 {
+                        index = index + arg_count;
+                    }; // +1 for the return value
+                    let debug = ty.debug.clone().unwrap_or("".to_string());
+                    format!("{decl} _{index}; // {debug} ")
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -144,6 +157,10 @@ impl Project {
 }}"#
             ));
         }
+
+        let inbuilts = get_inbuilt_functions().join("\n\n");
+
+        output.insert(0, inbuilts);
 
         let includes = includes
             .into_iter()

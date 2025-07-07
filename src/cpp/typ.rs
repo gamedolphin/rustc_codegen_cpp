@@ -20,6 +20,7 @@ use super::{function::FunctionContext, project::Project};
 pub struct TypeVal {
     pub ty: Type,
     pub hash: u128,
+    pub debug: Option<String>,
 }
 
 impl TypeVal {
@@ -51,10 +52,41 @@ pub enum Type {
     Enum(u128),
     Array(u128, u64, u64, u64),
     Span(u128, bool),
-    Tuple(Vec<u128>)
+    Tuple(Vec<u128>),
 }
 
 impl Type {
+    pub fn get_base_cgen_type(&self, project: &Project) -> Type {
+        match self {
+            Type::Void => Type::Void,
+            Type::Char | Type::String | Type::StringView => Type::Char,
+            Type::FnPtr(_) | Type::RawPtr(..) | Type::Struct(..) | Type::Enum(..) => {
+                Type::UInt(UIntType::Usize)
+            }
+            Type::Array(inner, _, _, _) | Type::Span(inner, _) => {
+                let inner_type = project.typs.get(inner).expect("Array type not found");
+                inner_type.ty.get_base_cgen_type(project)
+            }
+            Type::Todo(_) => Type::Void,
+            _ => Type::UInt(UIntType::U8),
+        }
+    }
+
+    pub fn get_base_type<'tcx>(&self, tcx: TyCtxt<'tcx>, project: &Project) -> (Type, Ty<'tcx>) {
+        match self {
+            Type::Void => (Type::Void, tcx.types.never),
+            Type::Char | Type::String | Type::StringView => (Type::Char, tcx.types.char),
+            Type::FnPtr(_) | Type::Struct(..) | Type::Enum(..) => {
+                (Type::UInt(UIntType::Usize), tcx.types.usize)
+            }
+            Type::Array(inner, _, _, _) | Type::Span(inner, _) | Type::RawPtr(inner, _) => {
+                let inner_type = project.typs.get(inner).expect("Array type not found");
+                inner_type.ty.get_base_type(tcx, project)
+            }
+            Type::Todo(_) => (Type::Void, tcx.types.never),
+            _ => (Type::UInt(UIntType::U8), tcx.types.u8),
+        }
+    }
     pub fn get_mangled(&self) -> String {
         match self {
             Type::Void => "v".to_string(),
@@ -206,6 +238,7 @@ pub fn get_type<'tcx>(
             let output = TypeVal {
                 hash: get_type_hash(tcx, output_ty),
                 ty: get_type(project, tcx, instance, fn_ctx, output_ty),
+                debug: Some(format!("FnPtr output: {:?}", output_ty.kind())),
             };
             let inputs: Vec<_> = sig
                 .inputs()
@@ -213,6 +246,7 @@ pub fn get_type<'tcx>(
                 .map(|ty| TypeVal {
                     hash: get_type_hash(tcx, *ty),
                     ty: get_type(project, tcx, instance, fn_ctx, *ty),
+                    debug: Some(format!("FnPtr input: {:?}", ty.kind())),
                 })
                 .collect();
             let fn_signature = FunctionSignature {

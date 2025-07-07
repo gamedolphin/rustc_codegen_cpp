@@ -1,8 +1,9 @@
 use rustc_hash::FxHashSet as HashSet;
+use rustc_middle::mir::BinOp;
 
 use super::{
-    constants::Constant, function::FunctionSignature, project::Project, structs::get_struct_name,
-    typ::Type,
+    constants::Constant, dyad::Dyad, function::FunctionSignature, project::Project,
+    structs::get_struct_name, typ::Type,
 };
 use crate::cpp::{
     enums::{get_enum_name, get_enum_variant_name, EnumVariant},
@@ -187,7 +188,7 @@ pub fn get_arg_type(ty: &Type, proj: &Project, includes: &mut HashSet<String>) -
     let actual = match ty {
         Type::Void => "void".to_string(),
         Type::Bool => "bool".to_string(),
-        Type::Char => "char32_t".to_string(),
+        Type::Char => "char".to_string(),
         Type::Int(int_type) => {
             includes.insert("<cstdint>".to_string());
             match int_type {
@@ -238,11 +239,12 @@ pub fn get_arg_type(ty: &Type, proj: &Project, includes: &mut HashSet<String>) -
             includes.insert("<functional>".to_string());
             get_fn_pointer_name(*hash)
         }
-        Type::RawPtr(inner, _) => {
+        Type::RawPtr(inner, mutable) => {
             let inner_ty = proj.typs.get(inner).unwrap();
             let inner_type = get_arg_type(&inner_ty.ty, proj, includes);
+            let mut_str = if *mutable { "" } else { "const " };
             // comment = format!("raw pointer to {}", inner_type.actual);
-            format!("{}*", inner_type.actual)
+            format!("{}{}*", mut_str, inner_type.actual)
         }
         Type::Struct(hash) => get_struct_name(*hash),
         Type::Enum(hash) => {
@@ -298,14 +300,19 @@ fn get_closure_name(hash: u128) -> String {
     format!("closure_{hash:x}")
 }
 
-pub fn get_body(body: &[Vec<Line>]) -> String {
+pub fn get_body(body: &[Vec<Line>], includes: &mut HashSet<String>) -> String {
     body.iter()
         .map(|statements| {
             statements
                 .iter()
                 .map(|line| match line {
                     Line::Assignment { lhs, rhs } => {
-                        format!("// {lhs} = {};", get_value_string(rhs))
+                        let val = get_value_string(rhs, includes);
+                        if let Value::Todo(_) = rhs {
+                            return format!("// {lhs} = {val};");
+                        } else {
+                            format!("{lhs} = {val};",)
+                        }
                     }
                     Line::Todo(todo) => format!("// Statement: {todo}"),
                 })
@@ -318,18 +325,69 @@ pub fn get_body(body: &[Vec<Line>]) -> String {
         .join("\n\n")
 }
 
-pub fn get_value_string(val: &Value) -> String {
+pub fn get_value_string(val: &Value, includes: &mut HashSet<String>) -> String {
     match val {
-        Value::Use(op) => get_op_string(op),
+        Value::Use(op) => get_op_string(op, includes),
+        Value::BinaryOp(dyad) => get_dyad_string(dyad, includes),
         Value::Todo(output) => output.to_string(),
     }
 }
 
-pub fn get_op_string(op: &Op) -> String {
+pub fn get_dyad_string(dyad: &Dyad, includes: &mut HashSet<String>) -> String {
+    let left = get_op_string(&dyad.left, includes);
+    let right = get_op_string(&dyad.right, includes);
+    match dyad.operation {
+        BinOp::Add => format!("{left} + {right}"),
+        BinOp::AddUnchecked => format!("{left} + {right} /* unchecked */"),
+        BinOp::AddWithOverflow => {
+            includes.insert("<stdckdint.h>".to_string());
+            format!("CHECKED_ADD({left}, {right})")
+        }
+        BinOp::Sub => format!("{left} - {right}"),
+        BinOp::SubUnchecked => format!("{left} - {right} /* unchecked */"),
+        BinOp::SubWithOverflow => {
+            includes.insert("<stdckdint.h>".to_string());
+            format!("CHECKED_SUB({left}, {right})")
+        }
+        BinOp::Mul => format!("{left} * {right}"),
+        BinOp::MulUnchecked => format!("{left} * {right} /* unchecked */"),
+        BinOp::MulWithOverflow => {
+            includes.insert("<stdckdint.h>".to_string());
+            format!("CHECKED_MUL({left}, {right})")
+        }
+        BinOp::Div => format!("{left} / {right}"),
+        BinOp::Rem => format!("{left} % {right}"),
+        BinOp::BitXor => format!("{left} ^ {right}"),
+        BinOp::BitAnd => format!("{left} & {right}"),
+        BinOp::BitOr => format!("{left} | {right}"),
+        BinOp::Shl => format!("{left} << {right}"),
+        BinOp::ShlUnchecked => format!("{left} << {right} /* unchecked */"),
+        BinOp::Shr => format!("{left} >> {right}"),
+        BinOp::ShrUnchecked => format!("{left} >> {right} /* unchecked */"),
+        BinOp::Eq => format!("{left} == {right}"),
+        BinOp::Lt => format!("{left} < {right}"),
+        BinOp::Le => format!("{left} <= {right}"),
+        BinOp::Ne => format!("{left} != {right}"),
+        BinOp::Ge => format!("{left} >= {right}"),
+        BinOp::Gt => format!("{left} > {right}"),
+        BinOp::Cmp => format!("{left} <=> {right}"),
+        BinOp::Offset => format!("{left} + {right} * sizeof({})", left),
+    }
+}
+
+pub fn get_op_string(op: &Op, includes: &mut HashSet<String>) -> String {
     match op {
         Op::Constant(val) => val.to_string(),
-        Op::Copy(output) => output.to_string(),
-        Op::Move(output) => output.to_string(),
+        Op::Copy(output, ty) => {
+            // checked to be trivially copyable by rust compiler
+            includes.insert("<bit>".to_string());
+            let cast_type = get_arg_type(ty, &Project::default(), includes).actual;
+            format!("std::bit_cast<{cast_type}>({output})")
+        }
+        Op::Move(output) => {
+            includes.insert("<utility>".to_string());
+            format!("std::move({})", output)
+        }
     }
 }
 
@@ -341,7 +399,8 @@ pub fn get_constant_definition(
 ) -> String {
     let typ = get_arg_type(&constant.typ, project, includes);
     let const_val = constant.value.clone();
-    match &constant.typ {
+    let mut output = String::new();
+    let type_val = match &constant.typ {
         Type::Void => panic!("Cannot generate string for void type constant"),
         Type::Bool => {
             let value = u8::from_ne_bytes(const_val.try_into().unwrap());
@@ -466,10 +525,11 @@ pub fn get_constant_definition(
             }
         },
         Type::Struct(hash) => {
+            includes.insert("<bit>".to_string());
             // get array of bytes
             let bytes = const_val
                 .iter()
-                .map(|b| format!("{b:01x}"))
+                .map(|b| format!("{b}"))
                 .collect::<Vec<_>>()
                 .join(",");
             let bytes = format!("{{{bytes}}}");
@@ -486,6 +546,50 @@ constexpr {struct_name} {name} = std::bit_cast<{struct_name}>({name}_bytes);
 "#
             )
         }
+        Type::Array(inner, size, _, _) => {
+            let inner_ty = project.typs.get(inner).unwrap();
+            let mut inner_type = get_arg_type(&inner_ty.ty, project, includes);
+            let data = if constant.deps.is_empty() {
+                let inner_base_type = inner_ty.ty.get_base_cgen_type(project);
+                inner_type = get_arg_type(&inner_base_type, project, includes);
+                let bytes = const_val
+                    .iter()
+                    .map(|b| format!("{b}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{{{bytes}}}")
+            } else {
+                constant
+                    .deps
+                    .iter()
+                    .map(|d| format!("{}({})", inner_type.actual, d))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+
+            format!(
+                r#"
+constexpr std::array<{}, {}> {name} = {{{}}};
+"#,
+                inner_type.actual, size, data
+            )
+        }
+        Type::RawPtr(hash, _) => {
+            let inner_ty = project.typs.get(hash).unwrap();
+            let inner_type = get_arg_type(&inner_ty.ty, project, includes);
+            let data_name = format!("{name}_data");
+            let constant = Constant {
+                typ: inner_ty.ty.clone(),
+                value: const_val,
+                size: constant.size,
+                deps: constant.deps.clone(),
+            };
+            let output_str = get_constant_definition(&data_name, &constant, project, includes);
+            format!(
+                "{output_str}\n\nconstexpr const {}* {name} = &{};",
+                inner_type.actual, data_name
+            )
+        }
         _ => format!(
             "// Cannot generate string for constant of type {:?} with value {:?}",
             typ.actual, constant.value
@@ -495,11 +599,15 @@ constexpr {struct_name} {name} = std::bit_cast<{struct_name}>({name}_bytes);
         // Type::String => todo!(),
         // Type::StringView => todo!(),
         // Type::FnPtr(_) => todo!(),
-        // Type::RawPtr(_, _) => todo!(),
+
         // Type::Struct(_) => todo!(),
         // Type::Enum(_) => todo!(),
         // Type::Array(_, _, _, _) => todo!(),
         // Type::Span(_, _) => todo!(),
         // Type::Tuple(items) => todo!(),
-    }
+    };
+
+    output.push_str(&type_val);
+
+    output
 }

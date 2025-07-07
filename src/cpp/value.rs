@@ -1,11 +1,12 @@
 use rustc_middle::mir::Rvalue;
 
-use crate::cpp::ops::translate_operand;
+use crate::cpp::{dyad::translate_binary_op, ops::translate_operand};
 
-use super::{function::FunctionContext, ops::Op, project::Project};
+use super::{dyad::Dyad, function::FunctionContext, ops::Op, project::Project};
 
 pub enum Value {
     Use(Op),
+    BinaryOp(Dyad),
     Todo(String),
 }
 
@@ -16,6 +17,7 @@ pub fn translate_rvalue<'tcx>(
 ) -> Value {
     match rvalue {
         Rvalue::Use(operand) => Value::Use(translate_operand(operand, fn_ctx, project)),
+        Rvalue::BinaryOp(bin_op, ops) => translate_binary_op(bin_op, ops, fn_ctx, project),
         _ => Value::Todo(format!("{:?}", rvalue)),
         // Rvalue::Repeat(operand, _) => todo!(),
         // Rvalue::Ref(region, borrow_kind, place) => todo!(),
@@ -23,7 +25,6 @@ pub fn translate_rvalue<'tcx>(
         // Rvalue::RawPtr(raw_ptr_kind, place) => todo!(),
         // Rvalue::Len(place) => todo!(),
         // Rvalue::Cast(cast_kind, operand, ty) => todo!(),
-        // Rvalue::BinaryOp(bin_op, _) => todo!(),
         // Rvalue::NullaryOp(null_op, ty) => todo!(),
         // Rvalue::UnaryOp(un_op, operand) => todo!(),
         // Rvalue::Discriminant(place) => todo!(),

@@ -54,6 +54,7 @@ pub fn get_struct_type<'tcx>(
             TypeVal {
                 ty: field_type,
                 hash: field_hash,
+                debug: Some(format!("{:?}", field_ty)),
             },
             Some(offset),
         ));

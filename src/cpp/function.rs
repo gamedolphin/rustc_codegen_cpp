@@ -8,7 +8,7 @@ use rustc_middle::{
 };
 
 use crate::cpp::{
-    statements::get_line,
+    statements::{get_line, get_terminator},
     typ::{get_type, get_type_hash, TypeVal},
 };
 
@@ -154,6 +154,7 @@ pub fn add_function<'tcx>(
     let return_type = TypeVal {
         hash: return_hash,
         ty: return_type,
+        debug: Some(format!("{:?}", fn_abi.ret.layout.ty)),
     };
     let fn_args: Vec<_> = fn_abi
         .args
@@ -162,7 +163,11 @@ pub fn add_function<'tcx>(
             let ty = ctx.monomorphize(arg.layout.ty);
             let ty_hash = get_type_hash(tcx, ty);
             let ty = get_type(project, tcx, instance, &ctx, ty);
-            TypeVal { hash: ty_hash, ty }
+            TypeVal {
+                hash: ty_hash,
+                ty,
+                debug: Some(format!("{:?}", arg.layout.ty)),
+            }
         })
         .collect();
 
@@ -182,7 +187,11 @@ pub fn add_function<'tcx>(
         let ty = ctx.monomorphize(local.ty);
         let ty = get_type(project, tcx, instance, &ctx, ty);
         let ty_hash = get_type_hash(tcx, local.ty);
-        locals.push(TypeVal { hash: ty_hash, ty });
+        locals.push(TypeVal {
+            hash: ty_hash,
+            ty,
+            debug: Some(format!("{:?}", local.ty)),
+        });
     }
 
     let mut blocks = Vec::new();
@@ -190,9 +199,12 @@ pub fn add_function<'tcx>(
     for (id, block) in mir.basic_blocks.iter_enumerated() {
         let mut statements = Vec::new();
         for statement in &block.statements {
+            statements.push(Line::Todo(format!("Debug: {:?}", statement.kind)));
             let stmts = get_line(statement, tcx, &ctx, project);
             statements.extend(stmts);
         }
+
+        statements.extend(get_terminator(block.terminator()));
 
         blocks.push(statements);
     }

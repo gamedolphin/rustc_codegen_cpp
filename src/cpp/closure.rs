@@ -43,6 +43,7 @@ pub fn get_closure_type<'tcx>(
         .map(|ty| TypeVal {
             hash: get_type_hash(tcx, *ty),
             ty: get_type(project, tcx, instance, fn_ctx, *ty),
+            debug: Some(format!("{:?}", ty)),
         })
         .collect();
     let output = get_type(project, tcx, instance, fn_ctx, sig.output());
@@ -50,6 +51,7 @@ pub fn get_closure_type<'tcx>(
     let output = TypeVal {
         hash: output_hash,
         ty: output,
+        debug: Some(format!("{:?}", sig.output())),
     };
     let fields: Vec<_> = closure
         .upvar_tys()
@@ -57,6 +59,7 @@ pub fn get_closure_type<'tcx>(
         .map(|ty| TypeVal {
             hash: get_type_hash(tcx, ty),
             ty: get_type(project, tcx, instance, fn_ctx, ty),
+            debug: Some(format!("{:?}", ty)),
         })
         .collect();
 

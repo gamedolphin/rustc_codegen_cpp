@@ -1,5 +1,5 @@
 use rustc_middle::{
-    mir::{Rvalue, Statement, StatementKind},
+    mir::{Rvalue, Statement, StatementKind, Terminator},
     ty::TyCtxt,
 };
 
@@ -39,13 +39,17 @@ pub fn get_line<'tcx>(
                 return vec![Line::Todo(format!("zero sized type assignmenet: {stmt:?}"))];
             }
 
-            let lhs = get_variable(place);
+            let lhs = get_variable(place, fn_ctx);
 
             let rhs = translate_rvalue(rvalue, fn_ctx, project);
             vec![Line::Assignment { lhs, rhs }]
         }
         _ => vec![Line::Todo(format!("{:?}", kind))],
     }
+}
+
+pub fn get_terminator<'tcx>(terminator: &Terminator<'tcx>) -> Vec<Line> {
+    vec![Line::Todo(format!("{:?}", terminator))] // Placeholder for terminator handling
 }
 
 fn rvalue_is_const_0<'tcx>(rvalue: &Rvalue<'tcx>, fn_ctx: &FunctionContext<'tcx>) -> bool {

@@ -65,6 +65,7 @@ pub fn get_enum_type<'tcx>(
                 TypeVal {
                     hash: field_hash,
                     ty: field_type,
+                    debug: Some(format!("{:?}", field_ty)),
                 },
                 Some(offset),
             ));
