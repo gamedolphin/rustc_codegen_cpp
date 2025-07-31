@@ -4,6 +4,7 @@ use crate::cpp::ops::translate_operand;
 
 use super::{function::FunctionContext, ops::Op, project::Project, value::Value};
 
+#[derive(Eq, Hash, PartialEq, Clone)]
 pub struct Dyad {
     pub operation: BinOp,
     pub left: Op,

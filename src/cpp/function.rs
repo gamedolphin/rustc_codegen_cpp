@@ -1,13 +1,16 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
+
 use rustc_abi::{CanonAbi, ExternAbi, TagEncoding, Variants};
 use rustc_middle::{
     mir::{Body, Statement, StatementKind},
     ty::{
-        layout::HasTypingEnv, EarlyBinder, Instance, List, PseudoCanonicalInput, TyCtxt, TyKind,
-        TypingEnv,
+        layout::HasTypingEnv, EarlyBinder, GenericArgsRef, Instance, List, PseudoCanonicalInput,
+        SymbolName, TyCtxt, TyKind, TypingEnv,
     },
 };
 
 use crate::cpp::{
+    inbuilts::get_inbuilt_functions,
     statements::{get_line, get_terminator},
     typ::{get_type, get_type_hash, TypeVal},
 };
@@ -23,8 +26,9 @@ pub struct FunctionSignature {
 
 pub struct Function {
     pub signature: FunctionSignature,
-    pub locals: Vec<TypeVal>,
+    pub locals: Vec<(usize, TypeVal)>,
     pub body: Vec<Vec<Line>>,
+    pub is_closure: bool,
 }
 
 pub struct FunctionContext<'tcx> {
@@ -115,8 +119,11 @@ pub fn add_function<'tcx>(
     project: &mut Project,
     tcx: TyCtxt<'tcx>,
     instance: Instance<'tcx>,
+    name: SymbolName<'tcx>,
 ) -> Result<(), String> {
-    let name = get_fn_name(tcx, &instance);
+    // if !instance.def_id().is_local() {
+    //     return Ok(()); // skip non-local instances
+    // }
 
     let ty = instance.ty(tcx, TypingEnv::fully_monomorphized());
     let kind = ty.kind();
@@ -129,6 +136,9 @@ pub fn add_function<'tcx>(
         return Ok(());
     }
 
+    let name = get_name_from_symbol(name);
+
+    let is_closure = matches!(kind, TyKind::Closure(..));
     let mir = tcx.instance_mir(instance.def);
     let ctx = FunctionContext::new(tcx, instance, mir.clone());
 
@@ -183,36 +193,46 @@ pub fn add_function<'tcx>(
         .filter(|(id, _)| id.as_usize() == 0 || id.as_usize() > mir.arg_count);
 
     let mut locals = Vec::new();
-    for (_, local) in locals_iter {
+    for (index, local) in locals_iter {
         let ty = ctx.monomorphize(local.ty);
         let ty = get_type(project, tcx, instance, &ctx, ty);
         let ty_hash = get_type_hash(tcx, local.ty);
-        locals.push(TypeVal {
-            hash: ty_hash,
-            ty,
-            debug: Some(format!("{:?}", local.ty)),
-        });
+        locals.push((
+            index.as_usize(),
+            TypeVal {
+                hash: ty_hash,
+                ty,
+                debug: Some(format!("{:?}", local.ty)),
+            },
+        ));
     }
 
-    let mut blocks = Vec::new();
+    if let Some(spread_arg) = mir.spread_arg {
+        let spread_arg_ty = ctx.monomorphize(mir.local_decls[spread_arg].ty);
+        let ty = get_type(project, tcx, instance, &ctx, spread_arg_ty);
+        let ty_hash = get_type_hash(tcx, spread_arg_ty);
 
-    for (id, block) in mir.basic_blocks.iter_enumerated() {
-        let mut statements = Vec::new();
-        for statement in &block.statements {
-            statements.push(Line::Todo(format!("Debug: {:?}", statement.kind)));
-            let stmts = get_line(statement, tcx, &ctx, project);
-            statements.extend(stmts);
-        }
-
-        statements.extend(get_terminator(block.terminator()));
-
-        blocks.push(statements);
+        locals.push((
+            spread_arg.as_usize(),
+            TypeVal {
+                hash: ty_hash,
+                ty,
+                debug: Some(format!(
+                    "{:?} (at {})",
+                    spread_arg_ty,
+                    spread_arg.as_usize()
+                )),
+            },
+        ));
     }
+
+    let blocks = get_lines(&mir, tcx, project, &ctx);
 
     let func = Function {
         signature,
         locals,
         body: blocks,
+        is_closure,
     };
 
     project.functions.insert(name, func);
@@ -220,9 +240,71 @@ pub fn add_function<'tcx>(
     Ok(())
 }
 
+pub fn get_lines<'tcx>(
+    mir: &Body<'tcx>,
+    tcx: TyCtxt<'tcx>,
+    project: &mut Project,
+    ctx: &FunctionContext<'tcx>,
+) -> Vec<Vec<Line>> {
+    let mut blocks = Vec::new();
+
+    for (id, block) in mir.basic_blocks.iter_enumerated() {
+        let mut statements = Vec::new();
+        for statement in &block.statements {
+            let stmts = get_line(statement, tcx, &ctx, project);
+
+            if stmts.iter().any(|line| !matches!(line, Line::Skip(_))) {
+                statements.push(Line::Todo(format!("Debug: {:?}", statement.kind)));
+            }
+            statements.extend(stmts);
+        }
+
+        statements.extend(get_terminator(block.terminator(), ctx, project));
+
+        blocks.push(statements);
+    }
+
+    blocks
+}
+
+pub fn get_fn_name_from_def_id<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: rustc_span::def_id::DefId,
+    args: GenericArgsRef<'tcx>,
+) -> String {
+    if let Some(instance) =
+        Instance::try_resolve(tcx, TypingEnv::fully_monomorphized(), def_id, args)
+            .expect("Failed to resolve instance")
+    {
+        return get_fn_name(tcx, &instance);
+    }
+    let mut state = DefaultHasher::new();
+    def_id.hash(&mut state);
+    args.hash(&mut state);
+    format!("fn_{:x}", state.finish())
+    // let env = rustc_middle::ty::TypingEnv::fully_monomorphized();
+    // let instance = tcx
+    //     .resolve_instance_raw(rustc_middle::ty::PseudoCanonicalInput {
+    //         typing_env: env,
+    //         value: (def_id, args),
+    //     })
+    //     .expect("Failed to resolve instance")
+    //     .expect("Instance resolution failed");
+    // return get_fn_name(tcx, &instance);
+}
+
 pub fn get_fn_name<'tcx>(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>) -> String {
     let symbol_name = tcx.symbol_name(*instance);
     symbol_name
+        .to_string()
+        .replace("::", "_")
+        .replace(".", "_")
+        .replace("$", "_")
+}
+
+pub fn get_name_from_symbol<'tcx>(symbol: SymbolName<'tcx>) -> String {
+    // Remove the leading "fn" and trailing "()" from the symbol name
+    symbol
         .to_string()
         .replace("::", "_")
         .replace(".", "_")

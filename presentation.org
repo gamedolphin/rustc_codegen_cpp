@@ -1,0 +1,327 @@
+#+title:	Writing Rust to write C++
+#+author:	Sandeep Nambiar
+#+email:	contact@sandeepnambiar.com
+
+* What?
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+1. Going through my learning graph and exploration of writing a custom rust codegen backend.
+2. Starting to write a codegen backend that transform rust MIR into C++.
+* Why?
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+1. I just wanted to learn.
+2. Certain blue console pissed me off.
+3. Interop is kind of my jam.
+* Who?
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+Hi, I'm Sandeep. Game dev, youtuber, rust enthusiast, general explorer.
+Find me at ~@gamedolphin~ on github. Or at the email above.
+* How?
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+** Rust Codegen
+If you dont know already, rust has a frontend and backend that gets you the compiled binary
+(or anything else :wink:)
+*** Frontend
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+Does most of the stuff that we know and love rust for.
+- Borrow checking
+- Type checking
+- Monomorphization - transform generics to solid types.
+*** Backend
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+Gets the MIR from the frontend, and converts into ... whatever.
+- Default is the LLVM backend, converts the MIR into LLVM-IR
+- Which then LLVM compiles into the binary.
+- There's also other backends
+- Cranelift - faster backend (hopefuly default soon)
+- GCC backend - uses GCC to compile the binary
+- Spirv - transforms rust into SPIRV that then can run on the GPU.
+
+*** Codegen_clr
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+- I was mainly inspired by the codegen_clr project.
+- Runs rust on the dotnet runtime (by generating the dotnet IR from MIR)
+- A lot of the code in my project is copied over from there,
+- Just me trusting they know what they're doing when I dont understand something.
+
+** MIR
+*** What does it look like?
+You can actually dump the MIR using this flag
+~RUSTFLAGS="-Z dump-mir=all" cargo build~
+
+*** And what it outputs...
+Looks simple enough
+#+begin_src rust :eval never
+  fn main() -> () {
+    let mut _0: ();
+    let _1: i32;
+    let mut _4: i32;
+    let mut _5: i32;
+    let mut _6: (i32, bool);
+
+    bb0: {
+        StorageLive(_1);
+        _1 = const 1_i32;
+        StorageLive(_2);
+        _2 = const 2_i32;
+        StorageLive(_3);
+        StorageLive(_4);
+        _4 = copy _1;
+        StorageLive(_5);
+        _5 = copy _2;
+        _6 = AddWithOverflow(copy _4, copy _5);
+        assert(!move (_6.1: bool), "attempt to compute `{} + {}`, which would overflow", move _4, move _5) -> [success: bb1, unwind continue];
+    }
+
+    bb1: {
+        _3 = move (_6.0: i32);
+        StorageDead(_5);
+        StorageDead(_4);
+        _0 = const ();
+        StorageDead(_3);
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+#+end_src
+
+*** Simple?
+Dear talk listener, it was not simple enough.
+
+* How? - 2
+So, lets get into some of the deets.
+** Implement the interface
+#+begin_src rust :eval never
+  impl CodegenBackend for CppCodegenBackend {
+      ...
+  }
+#+end_src
+** No-mangle export
+#+begin_src rust :eval never
+  #[no_mangle]
+pub fn __rustc_codegen_backend() -> Box<dyn CodegenBackend> {
+    Box::new(CppCodegenBackend)
+}
+#+end_src
+** Thats it.
+~RUSTFLAGS="-Zcodegen-backend=../../target/debug/librustc_codegen_cpp.so" cargo build~
+
+Cargo will now use the codegen backend you built!
+** The interface!
+There's a few functions in there, but the one we should be most concerned with is
+
+#+begin_src rust :eval never
+  fn codegen_crate<'tcx>(&self, tcx: TyCtxt<'tcx>) -> Box<dyn Any> {
+      ...
+  }
+#+end_src
+That ~tcx~ has all the information at this point for doing what you want.
+
+* Codegen Units
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+#+begin_src rust :eval never
+  let cgus = tcx.collect_and_partition_mono_items(());
+#+end_src
+1. These ~cgus~ are all the codegen units in this particular compilation.
+2. Doesn't necessarily translate into actual units in your program. Lets ignore that for now.
+3. We generate one big cpp file.
+
+* Per codegen unit
+#+begin_src rust :eval never
+  match item {
+        MonoItem::Fn(instance) => {}       // only handling this for now
+        MonoItem::Static(def_id) => {}
+        MonoItem::GlobalAsm(item_id) => {}
+  }
+#+end_src
+1. In each codegen unit, you get a bunch of stuff!
+2. I'm following codegen_clr's example that fills out the types as it encounters them.
+
+* ~TyCtxt~
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+#+begin_src rust :eval never
+  let fn_abi = tcx
+        .fn_abi_of_instance(PseudoCanonicalInput {
+            typing_env: TypingEnv::fully_monomorphized(),
+            value: (instance, List::empty()),
+        })
+        .map_err(|_| "Failed to get function ABI".to_string())?;
+#+end_src
+This is the context for the compilation.
+1. It has all the information you need (and more, like debug stuff)
+2. Provides a bunch of optimized queries to give you the information you need.
+3. You ask for the type definitions and function signatures, their bodies and return types.
+
+* ~Ty<'tcx>~
+This is the other main thing you'll see everywhere.
+#+begin_src rust :eval never
+pub struct Ty<'tcx>(Interned<'tcx, WithCachedTypeInfo<TyKind<'tcx>>>);
+#+end_src
+** What?
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+#+begin_src rust :eval never
+  instance.instantiate_mir_and_normalize_erasing_regions(
+              tcx,
+              TypingEnv::fully_monomorphized(),
+              EarlyBinder::bind(ty)
+  )
+#+end_src
+1. This holds all information about a particular type (combined with TyCtxt)
+2. Dont forget to ~monomorphize~ EVERYWHERE
+This gets rids of generics and lifetimes and you get the actual type (or real function).
+
+* MIR
+1. So, you might have noticed, that MIR looks like this
+#+begin_src rust :eval never
+  <fn_name>() -> <return_type> {
+    <local_variables>
+
+    bb0: {
+        <statement_1>
+        <statement_2>
+        <terminator>
+    }
+
+    bb1: {
+        <statement_1>
+        <statement_2>
+        <terminator>
+    }
+  }
+#+end_src
+** Steps:
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+1. So you just iterate over each of the statements and terminators and you're done.
+2. Terminators are usually - function call, if didn't fail, ~goto~ :scream:
+3. If fail, unwind, or continue.
+4. And other variations of this.
+5. Just go through this, and you are done!
+
+* Challenges
+** Global Allocations
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+1. Translating global allocations into ~constexprs~ that actually compiled was painful.
+2. I still dont get it.
+3. Mostly trusting codegen_clr's code.
+** Dyn Traits
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+#+begin_src c++ :eval never
+  struct FatPtr {
+    const void* data;
+    void* fn;
+  };
+#+end_src
+1. You would think c++ abstract classes would be great!
+2. But its a trap!
+3. I did try, and I don't want to ever do it again.
+   1. We left multiple inheritance and I do not want to go back.
+4. So its void* everywhere, or fat pointers with more void*. Trust the rustc frontend.
+
+** Closures
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+#+begin_src c++ :eval never
+  class closure_1 {
+    public:
+    int field_0;
+  };
+  int32_t  closure_1_fn(closure_1 _1) {
+    // closure body
+  }
+#+end_src
+1. They are basically Data + FnOnce/Mut/Others.
+2. So each closure becomes a simple object that holds data
+3. And a function that takes this object as the first param.
+This actually comes as part of the codegen units.
+
+** Casts
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+1. Did you know closures can be cast into dyn traits? They are just structs + functions.
+2. Took me forever to get it to compile.
+3. Got rid of ~std::function~ because it wont let me be unsafe. :D
+4. Again, trust the rustc frontend.
+5. Also function call abi can be different between pointers and structs in c++,
+   so transmuting a ~func(struct a)~ to ~func(struct* a)~ is not "safe".
+6. Also ~#[repr(transparent)]~ hides pointers deep in them like ~std::ptr::NonNull<T>~
+
+* Current State
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+1. Show the generated cpp code.
+2. This is where I am, just a bunch of comments that describe what is being translated.
+3. And stuff that is left to do  "not yet"
+* The C++
+** The Struct
+1. Begin with going through the MIR and populating this struct.
+   Functions, types, closures and so on.
+   #+begin_src rust :eval never
+     #[derive(Default)]
+     pub struct Project {
+         pub typs: HashMap<u128, TypeVal>,
+         pub main: Option<String>,
+         pub functions: HashMap<String, Function>,
+         pub function_signatures: HashMap<u128, FunctionSignature>,
+         pub closures: HashMap<u128, Closure>,
+         pub strukts: HashMap<u128, Strukt>,
+         pub enums: HashMap<u128, Enum>,
+         pub consts: HashMap<String, Constant>,
+         pub sorted_consts: Vec<String>,
+         pub external_functions: HashMap<u128, String>,
+     }
+#+end_src
+** Sort
+Use Kahn algorithm to order the types by dependencies. Trying to avoid forward declarations.
+** Generate!
+3. Generate C++ functions just going through this.
+
+* So!
+:PROPERTIES:
+:DSLIDE_ACTIONS: dslide-action-item-reveal
+:END:
+1. I was hoping to be done befoore the talk.
+2. Of course I overestimated myself, and under-estimated the work.
+3. At least it compiles.
+4. Which is more than what I can say of other projects I have made with rust.
+5. Though this is c++, and "it compiles" means nothing.
+6. Especially with the things that I am doing.
+** Next goal -
+1. Fill out the TODO translations.
+2. Attempt to compile the standard lib.
+* Questions?
+* Dont get to this slide
+#+begin_src elisp :direction begin
+  (set-frame-font "Iosevka Nerd Font 12" nil t)
+#+end_src
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

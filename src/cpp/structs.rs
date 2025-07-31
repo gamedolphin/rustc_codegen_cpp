@@ -36,6 +36,7 @@ pub fn get_struct_type<'tcx>(
 
     let layout = fn_ctx.layout_of(ty);
     let offsets = get_field_offsets(&layout.fields);
+
     let fields_iter = def
         .variant(VariantIdx::from_u32(0))
         .fields
@@ -58,6 +59,14 @@ pub fn get_struct_type<'tcx>(
             },
             Some(offset),
         ));
+    }
+
+    let repr = def.repr();
+    if repr.transparent() {
+        let first_field = fields
+            .first()
+            .expect("Transparent struct must have at least one field");
+        return first_field.0.ty.clone();
     }
 
     let size = layout.layout.size().bytes();

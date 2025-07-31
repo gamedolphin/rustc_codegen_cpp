@@ -31,21 +31,20 @@ pub fn get_variable_type<'tcx>(
                 return get_type(project, fn_ctx.tcx, fn_ctx.instance, fn_ctx, ty);
             }
 
-            let binder = if let TyKind::Closure(_, args) = pty.kind() {
-                args.as_closure().sig()
-            } else if pty.is_fn_ptr() || pty.is_fn() {
-                pty.fn_sig(fn_ctx.tcx)
-            } else {
-                // neither, just return the type
-                return get_type(project, fn_ctx.tcx, fn_ctx.instance, fn_ctx, ty);
-            };
+            return get_type(project, fn_ctx.tcx, fn_ctx.instance, fn_ctx, ty);
+            // let binder = if pty.is_fn_ptr() || pty.is_fn() {
+            //     pty.fn_sig(fn_ctx.tcx)
+            // } else {
+            //     // neither, just return the type
 
-            let sig = fn_ctx.tcx.normalize_erasing_late_bound_regions(
-                rustc_middle::ty::TypingEnv::fully_monomorphized(),
-                binder,
-            );
-            let output_ty = fn_ctx.monomorphize(sig.output());
-            return get_type(project, fn_ctx.tcx, fn_ctx.instance, fn_ctx, output_ty);
+            // };
+
+            // let sig = fn_ctx.tcx.normalize_erasing_late_bound_regions(
+            //     rustc_middle::ty::TypingEnv::fully_monomorphized(),
+            //     binder,
+            // );
+            // let output_ty = fn_ctx.monomorphize(sig.output());
+            // return get_type(project, fn_ctx.tcx, fn_ctx.instance, fn_ctx, output_ty);
         }
         ProjectionElem::Index(_)
         | ProjectionElem::ConstantIndex { .. }
@@ -79,12 +78,12 @@ pub fn get_variable<'tcx>(place: &Place<'tcx>, fn_ctx: &FunctionContext<'tcx>) -
             ProjectionElem::Deref => output = format!("*({output})"),
             ProjectionElem::Field(field_idx, _) => {
                 let field_index = field_idx.as_usize();
-                if field_index == 0 && (pty.is_closure() || pty.is_fn()) {
-                    // this is a return value.. probably from a function call
-                    output = format!("({output})(/* TODO: function args */)");
+                // if field_index == 0 && (pty.is_closure() || pty.is_fn()) {
+                //     // this is a return value.. probably from a function call
+                //     output = format!("{output}");
 
-                    return;
-                }
+                //     return;
+                // }
 
                 if layout.is_tuple::<FunctionContext>() {
                     output = format!("std::get<{field_index}>({output})");
@@ -97,7 +96,7 @@ pub fn get_variable<'tcx>(place: &Place<'tcx>, fn_ctx: &FunctionContext<'tcx>) -
                 // }
 
                 let field_name = get_field_name(field_index);
-                output.push_str(&format!(".{field_name}"));
+                output = format!("({output}).{field_name}");
             }
             ProjectionElem::Index(local) => {
                 output.push_str(&format!("[{}]", local.index()));

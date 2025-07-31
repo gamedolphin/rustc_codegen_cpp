@@ -8,9 +8,9 @@ use super::{
 use crate::cpp::{
     enums::{get_enum_name, get_enum_variant_name, EnumVariant},
     fields::get_field_name,
-    ops::Op,
+    ops::{is_unint_operand, Op},
     statements::Line,
-    typ::{FloatType, IntType, UIntType},
+    typ::{FloatType, IntType, TypeVal, UIntType},
     value::Value,
 };
 
@@ -58,9 +58,54 @@ pub fn get_decl_type(
         Type::Closure(index) => {
             includes.insert("<functional>".to_string());
             let closure = proj.closures.get(index).unwrap();
-            let typedef = get_fn_signature(&closure.signature, proj, includes);
+            let types = closure
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, (ty, _))| {
+                    let ty = get_arg_type(&ty.ty, proj, includes);
+                    format!("{} {};", ty.actual, get_field_name(index))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             let name = get_closure_name(hash);
-            output = format!("using {name} = {typedef};");
+
+            let signature = &closure.signature;
+
+            let return_type = get_arg_type(&signature.return_type.ty, proj, includes).actual;
+            let input_vars = signature
+                .args
+                .iter()
+                .enumerate()
+                .filter_map(|(index, ty)| {
+                    if matches!(ty.ty, Type::Void) {
+                        return None;
+                    }
+                    let arg_info = get_arg_type(&ty.ty, proj, includes);
+                    Some(arg_info.to_print(&format!("_{index}")))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let actual_fn = &signature.name;
+
+            output = format!(
+                r#"
+class {name} {{
+public:
+{types}
+}};
+
+{return_type} {actual_fn}({input_vars});
+
+FatPtr* GetClosurePtr_{actual_fn}(const {name}* closure) {{
+    return new FatPtr {{
+        .data = closure,
+        .fn = reinterpret_cast<void*>(&{actual_fn})
+    }};
+}}
+"#
+            );
         }
         Type::Todo(_) => {}
         Type::String => {}
@@ -96,7 +141,8 @@ pub fn get_decl_type(
             output = format!(
                 r#"
 // {index}
-struct {name} {{
+class {name} {{
+public:
 {fields}
 }};
 "#
@@ -111,7 +157,7 @@ struct {name} {{
                     let name = get_enum_variant_name(*hash, *discriminant);
                     match variant {
                         EnumVariant::Tag => {
-                            format!("struct {name} {{}};")
+                            format!("class {name} {{}};")
                         }
                         EnumVariant::Fields(fields) => {
                             let fields_str = fields
@@ -132,7 +178,7 @@ struct {name} {{
                                 })
                                 .collect::<Vec<_>>()
                                 .join("\n");
-                            format!("struct {name} {{\n{fields_str}\n}};")
+                            format!("class {name} {{\npublic:\n{fields_str}\n}};")
                         }
                     }
                 })
@@ -180,7 +226,7 @@ fn get_fn_signature(
         .collect::<Vec<_>>()
         .join(", ");
 
-    format!("std::function<{return_type}({args_str})>")
+    format!("{return_type} (*) ({args_str})")
 }
 
 pub fn get_arg_type(ty: &Type, proj: &Project, includes: &mut HashSet<String>) -> ArgInfo {
@@ -229,7 +275,7 @@ pub fn get_arg_type(ty: &Type, proj: &Project, includes: &mut HashSet<String>) -
         }
         Type::Todo(v) => {
             comment = v.to_string();
-            "int".to_string()
+            "".to_string()
         }
         Type::String => {
             includes.insert("<string>".to_string());
@@ -240,11 +286,24 @@ pub fn get_arg_type(ty: &Type, proj: &Project, includes: &mut HashSet<String>) -
             get_fn_pointer_name(*hash)
         }
         Type::RawPtr(inner, mutable) => {
-            let inner_ty = proj.typs.get(inner).unwrap();
+            let unknown_type = TypeVal {
+                ty: Type::Void,
+                hash: *inner,
+                debug: Some(format!(
+                    "raw pointer to unknown type {inner} for {}",
+                    ty.get_mangled()
+                )),
+            };
+            let inner_ty = proj.typs.get(inner).unwrap_or_else(|| &unknown_type);
             let inner_type = get_arg_type(&inner_ty.ty, proj, includes);
             let mut_str = if *mutable { "" } else { "const " };
             // comment = format!("raw pointer to {}", inner_type.actual);
-            format!("{}{}*", mut_str, inner_type.actual)
+            format!(
+                "/*{}*/{}{}*",
+                inner_ty.debug.clone().unwrap_or("".to_string()),
+                mut_str,
+                inner_type.actual
+            )
         }
         Type::Struct(hash) => get_struct_name(*hash),
         Type::Enum(hash) => {
@@ -270,9 +329,9 @@ pub fn get_arg_type(ty: &Type, proj: &Project, includes: &mut HashSet<String>) -
 
             includes.insert("<span>".to_string());
             if *mutable {
-                format!("std::span<const {}>", inner_type.actual)
-            } else {
                 format!("std::span<{}>", inner_type.actual)
+            } else {
+                format!("std::span<const {}>", inner_type.actual)
             }
         }
         Type::Tuple(tys) => {
@@ -287,6 +346,9 @@ pub fn get_arg_type(ty: &Type, proj: &Project, includes: &mut HashSet<String>) -
                 .join(", ");
             format!("std::tuple<{inner_types}>")
         }
+        Type::Dynamic => {
+            format!("void *")
+        }
     };
 
     ArgInfo { actual, comment }
@@ -296,25 +358,60 @@ fn get_fn_pointer_name(hash: u128) -> String {
     format!("fn_ptr_{hash:x}")
 }
 
-fn get_closure_name(hash: u128) -> String {
+pub fn get_closure_name(hash: u128) -> String {
     format!("closure_{hash:x}")
 }
 
-pub fn get_body(body: &[Vec<Line>], includes: &mut HashSet<String>) -> String {
+pub fn get_body(body: &[Vec<Line>], project: &Project, includes: &mut HashSet<String>) -> String {
     body.iter()
         .map(|statements| {
             statements
                 .iter()
-                .map(|line| match line {
-                    Line::Assignment { lhs, rhs } => {
-                        let val = get_value_string(rhs, includes);
-                        if let Value::Todo(_) = rhs {
-                            return format!("// {lhs} = {val};");
-                        } else {
-                            format!("{lhs} = {val};",)
+                .filter_map(|line| -> Option<String> {
+                    match line {
+                        Line::Assignment { lhs, rhs } => {
+                            let val = get_value_string(rhs, project, includes);
+                            if let Value::Todo(_) = rhs {
+                                return Some(format!("// {lhs} = {val};"));
+                            } else {
+                                Some(format!("{lhs} = {val};"))
+                            }
                         }
+                        Line::Skip(_) => None,
+                        Line::Todo(todo) => Some(format!("// Statement: {todo}")),
+                        Line::CallLocal(destination, op, args) => {
+                            let args_str = args
+                                .iter()
+                                .map(|arg| get_op_string(arg, project, includes))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let destination = if let Some(dest) = destination {
+                                format!("{dest} = ")
+                            } else {
+                                String::new()
+                            };
+                            Some(format!(
+                                "{}{}({});",
+                                destination,
+                                get_op_string(op, project, includes),
+                                args_str
+                            ))
+                        }
+                        Line::CallFunc(destination, name, args) => {
+                            let args_str = args
+                                .iter()
+                                .map(|arg| get_op_string(arg, project, includes))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let destination = if let Some(dest) = destination {
+                                format!("{dest} = ")
+                            } else {
+                                String::new()
+                            };
+                            Some(format!("{}{}({});", destination, name, args_str))
+                        }
+                        Line::GoTo(target) => Some(format!("goto bb{target};")),
                     }
-                    Line::Todo(todo) => format!("// Statement: {todo}"),
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -325,17 +422,146 @@ pub fn get_body(body: &[Vec<Line>], includes: &mut HashSet<String>) -> String {
         .join("\n\n")
 }
 
-pub fn get_value_string(val: &Value, includes: &mut HashSet<String>) -> String {
+pub fn get_value_string(val: &Value, project: &Project, includes: &mut HashSet<String>) -> String {
     match val {
-        Value::Use(op) => get_op_string(op, includes),
-        Value::BinaryOp(dyad) => get_dyad_string(dyad, includes),
+        Value::Use(op) => get_op_string(op, project, includes),
+        Value::BinaryOp(dyad) => get_dyad_string(dyad, project, includes),
+        Value::Reference(var) => format!("&{var}"),
         Value::Todo(output) => output.to_string(),
+        Value::CastTo(op, ty) => {
+            let cast_type = get_arg_type(ty, project, includes);
+            if cast_type.actual.is_empty() {
+                return format!(
+                    "/* cast to void */ {}",
+                    get_op_string(op, project, includes)
+                );
+            }
+            if matches!(*ty, Type::FnPtr(..)) {
+                return format!(
+                    "reinterpret_cast<{}>({})",
+                    cast_type.actual,
+                    get_op_string(op, project, includes)
+                );
+            }
+            format!(
+                "static_cast<{}>({})",
+                cast_type.actual,
+                get_op_string(op, project, includes)
+            )
+        }
+        Value::Reinterpret(op, ty) => {
+            let cast_type = get_arg_type(ty, project, includes);
+            if cast_type.actual.is_empty() {
+                return format!(
+                    "/* cast to void */ {}",
+                    get_op_string(op, project, includes)
+                );
+            }
+            format!(
+                "reinterpret_cast<{}>({})",
+                cast_type.actual,
+                get_op_string(op, project, includes)
+            )
+        }
+        Value::Strukt(hash, fields) => {
+            let struct_name = get_struct_name(*hash);
+            let fields_str = fields
+                .iter()
+                .map(|(index, op)| {
+                    let comma = if *index < fields.len() - 1 { ", " } else { "" };
+                    if let Op::Todo(v) = op {
+                        return format!("/* {} - {} */", get_field_name(*index), v);
+                    }
+                    format!(
+                        ".{} = {}{}",
+                        get_field_name(*index),
+                        get_op_string(op, project, includes),
+                        comma
+                    )
+                })
+                .collect::<Vec<_>>()
+                .concat();
+            format!("{struct_name}{{{fields_str}}}")
+        }
+
+        Value::Enum(hash, discr, fields) => {
+            let variant_name = get_enum_variant_name(*hash, *discr);
+            let fields_str = fields
+                .iter()
+                .map(|(index, op)| {
+                    let comma = if *index < fields.len() - 1 { ", " } else { "" };
+                    if let Op::Todo(v) = op {
+                        return format!("/* {} - {} */", get_field_name(*index), v);
+                    }
+                    format!(
+                        ".{} = {}{}",
+                        get_field_name(*index),
+                        get_op_string(op, project, includes),
+                        comma
+                    )
+                })
+                .collect::<Vec<_>>()
+                .concat();
+
+            format!("{variant_name}{{{fields_str}}}")
+        }
+        Value::Tuple(items) => {
+            let items_str = items
+                .iter()
+                .map(|(_, op)| get_op_string(op, project, includes))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("std::make_tuple({items_str})")
+        }
+        Value::Array(items) => {
+            let items_str = items
+                .iter()
+                .map(|(_, op)| get_op_string(op, project, includes))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{{items_str}}}")
+        }
+        Value::Closure(hash, fields) => {
+            let closure_name = get_closure_name(*hash);
+            let fields_str = fields
+                .iter()
+                .map(|(index, op)| {
+                    let comma = if *index < fields.len() - 1 { ", " } else { "" };
+                    if let Op::Todo(v) = op {
+                        return format!("/* {} - {} */", get_field_name(*index), v);
+                    }
+                    format!(
+                        ".{} = {}{}",
+                        get_field_name(*index),
+                        get_op_string(op, project, includes),
+                        comma
+                    )
+                })
+                .collect::<Vec<_>>()
+                .concat();
+            format!("{closure_name}{{{fields_str}}}")
+        }
+        Value::FnPtr(fn_name) => {
+            format!("{fn_name}")
+        }
+        Value::Dereference(op) => {
+            format!("*{}", get_op_string(op, project, includes))
+        }
+        Value::FatPtr(hash, op) => {
+            let closure = project.closures.get(hash).unwrap();
+            let fn_name = closure.signature.name.clone();
+
+            format!(
+                "GetClosurePtr_{fn_name}({})",
+                get_op_string(op, project, includes)
+            )
+        }
     }
 }
 
-pub fn get_dyad_string(dyad: &Dyad, includes: &mut HashSet<String>) -> String {
-    let left = get_op_string(&dyad.left, includes);
-    let right = get_op_string(&dyad.right, includes);
+pub fn get_dyad_string(dyad: &Dyad, project: &Project, includes: &mut HashSet<String>) -> String {
+    let left = get_op_string(&dyad.left, project, includes);
+    let right = get_op_string(&dyad.right, project, includes);
     match dyad.operation {
         BinOp::Add => format!("{left} + {right}"),
         BinOp::AddUnchecked => format!("{left} + {right} /* unchecked */"),
@@ -375,19 +601,31 @@ pub fn get_dyad_string(dyad: &Dyad, includes: &mut HashSet<String>) -> String {
     }
 }
 
-pub fn get_op_string(op: &Op, includes: &mut HashSet<String>) -> String {
+pub fn get_op_string(op: &Op, project: &Project, includes: &mut HashSet<String>) -> String {
     match op {
         Op::Constant(val) => val.to_string(),
         Op::Copy(output, ty) => {
+            if !is_trivially_copyable(ty.clone()) {
+                return format!("{output}"); // function pointers are handled by cpp
+            }
+
             // checked to be trivially copyable by rust compiler
             includes.insert("<bit>".to_string());
-            let cast_type = get_arg_type(ty, &Project::default(), includes).actual;
+            let cast_type = get_arg_type(ty, &project, includes).actual;
             format!("std::bit_cast<{cast_type}>({output})")
         }
         Op::Move(output) => {
             includes.insert("<utility>".to_string());
             format!("std::move({})", output)
         }
+        Op::Todo(output) => format!("/* TODO: {output} */"),
+    }
+}
+
+fn is_trivially_copyable(ty: Type) -> bool {
+    match ty {
+        Type::Closure(_) | Type::FnPtr(_) => return false,
+        _ => return true,
     }
 }
 

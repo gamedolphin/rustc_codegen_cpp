@@ -85,7 +85,7 @@ pub fn get_enum_type<'tcx>(
     Type::Enum(hash)
 }
 
-fn parse_discriminant<'tcx>(val: &VariantDiscr, tcx: TyCtxt<'tcx>) -> u128 {
+pub fn parse_discriminant<'tcx>(val: &VariantDiscr, tcx: TyCtxt<'tcx>) -> u128 {
     match val {
         VariantDiscr::Explicit(val) => {
             let val = tcx.const_eval_poly(*val).unwrap();

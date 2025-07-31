@@ -8,7 +8,7 @@ use crate::cpp::{
     closure::get_closure_type,
     enums::{get_enum_type, EnumVariant},
     fields::get_field_offsets,
-    function::FunctionSignature,
+    function::{get_fn_name, get_fn_name_from_def_id, FunctionSignature},
     structs::get_struct_type,
 };
 
@@ -43,6 +43,7 @@ pub enum Type {
     UInt(UIntType),
     Float(FloatType),
     Closure(u128), // index into closure table
+    Dynamic,
     Todo(String),
     String,
     StringView,
@@ -56,13 +57,18 @@ pub enum Type {
 }
 
 impl Type {
+    pub fn is_void(&self) -> bool {
+        matches!(self, Type::Void)
+    }
     pub fn get_base_cgen_type(&self, project: &Project) -> Type {
         match self {
             Type::Void => Type::Void,
             Type::Char | Type::String | Type::StringView => Type::Char,
-            Type::FnPtr(_) | Type::RawPtr(..) | Type::Struct(..) | Type::Enum(..) => {
-                Type::UInt(UIntType::Usize)
-            }
+            Type::Closure(_)
+            | Type::FnPtr(_)
+            | Type::RawPtr(..)
+            | Type::Struct(..)
+            | Type::Enum(..) => Type::UInt(UIntType::Usize),
             Type::Array(inner, _, _, _) | Type::Span(inner, _) => {
                 let inner_type = project.typs.get(inner).expect("Array type not found");
                 inner_type.ty.get_base_cgen_type(project)
@@ -76,7 +82,7 @@ impl Type {
         match self {
             Type::Void => (Type::Void, tcx.types.never),
             Type::Char | Type::String | Type::StringView => (Type::Char, tcx.types.char),
-            Type::FnPtr(_) | Type::Struct(..) | Type::Enum(..) => {
+            Type::Closure(_) | Type::FnPtr(_) | Type::Struct(..) | Type::Enum(..) => {
                 (Type::UInt(UIntType::Usize), tcx.types.usize)
             }
             Type::Array(inner, _, _, _) | Type::Span(inner, _) | Type::RawPtr(inner, _) => {
@@ -134,6 +140,7 @@ impl Type {
                 let types: Vec<String> = tys.iter().map(|ty| ty.to_string()).collect();
                 format!("tuple_{}", types.join("_"))
             }
+            Type::Dynamic => "dyn".to_string(),
         }
     }
 }
@@ -220,14 +227,33 @@ pub fn get_type<'tcx>(
         TyKind::Bound(debruijn_index, _) => Type::Void,
         TyKind::Bool => Type::Bool,
         TyKind::Char => Type::Char,
-        TyKind::Int(int_ty) => Type::from(int_ty),
-        TyKind::Uint(uint_ty) => Type::from(uint_ty),
-        TyKind::Float(float_ty) => Type::from(float_ty),
+        TyKind::Int(int_ty) => {
+            let typ = Type::from(int_ty);
+            project.add_type(tcx, ty, typ.clone());
+            typ
+        }
+        TyKind::Uint(uint_ty) => {
+            let typ = Type::from(uint_ty);
+            project.add_type(tcx, ty, typ.clone());
+            typ
+        }
+        TyKind::Float(float_ty) => {
+            let typ = Type::from(float_ty);
+            project.add_type(tcx, ty, typ.clone());
+            typ
+        }
         TyKind::Closure(def, args) => {
             let closure = args.as_closure();
             let layout = fn_ctx.layout_of(ty);
             let hash = get_type_hash(tcx, ty);
-            get_closure_type(hash, closure, fn_ctx, tcx, project, instance, layout)
+            let instance =
+                Instance::resolve_closure(tcx, *def, args, rustc_middle::ty::ClosureKind::FnOnce);
+            let body = tcx.instance_mir(instance.def);
+            let fn_ctx = FunctionContext::new(tcx, instance, body.clone());
+            let fn_name = get_fn_name_from_def_id(tcx, instance.def_id(), args);
+            get_closure_type(
+                hash, &fn_name, closure, &fn_ctx, tcx, project, instance, layout,
+            )
         }
         TyKind::FnPtr(binder, fn_header) => {
             let sig = tcx.normalize_erasing_late_bound_regions(
@@ -279,6 +305,7 @@ pub fn get_type<'tcx>(
                             return Type::StringView;
                         }
                     }
+                    TyKind::Dynamic(..) => return Type::Dynamic,
                     _ => {} // the rest can just be a regular raw pointer
                 }
             }
@@ -314,7 +341,7 @@ pub fn get_type<'tcx>(
             } else {
                 Type::StringView
             }
-        } // this never happens
+        }
         TyKind::Slice(inner) => {
             let inner = fn_ctx.monomorphize(*inner);
             let inner_type = get_type(project, tcx, instance, fn_ctx, inner);
@@ -322,7 +349,7 @@ pub fn get_type<'tcx>(
             Type::Span(hash, false) // slices are always immutable
         }
         TyKind::FnDef(..) => Type::Void,
-        TyKind::Dynamic(_, _, dyn_kind) => Type::Todo(format!("Dynamic: {:?}", dyn_kind)),
+        TyKind::Dynamic(_, _, dyn_kind) => Type::Dynamic,
         TyKind::Coroutine(def_id, gens) => {
             Type::Todo(format!("Coroutine: {:?}, gens: {:?}", def_id, gens))
         }
@@ -337,16 +364,12 @@ pub fn get_type<'tcx>(
                     Some(hash)
                 })
                 .collect();
-            if tuple_types.is_empty() {
-                Type::Void
-            } else {
-                Type::Tuple(tuple_types)
-            }
+            Type::Tuple(tuple_types)
         }
         TyKind::Alias(alias_ty_kind, alias_ty) => {
             panic!("Alias: {:?} {:?}", alias_ty_kind, alias_ty)
         }
-        _ => todo!("Unhandled type: {:?}", ty.kind()),
+        _ => Type::Todo(format!("Unhandled type: {:?}", ty.kind())),
     };
 
     project.add_type(tcx, ty, output.clone());

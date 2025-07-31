@@ -1,3 +1,4 @@
+pub mod aggregate;
 pub mod closure;
 pub mod constants;
 pub mod dyad;

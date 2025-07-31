@@ -15,10 +15,12 @@ use crate::cpp::{
 
 use super::{function::FunctionContext, project::Project, variables::get_variable_type};
 
+#[derive(Eq, Hash, PartialEq, Clone)]
 pub enum Op {
     Constant(String),
     Copy(String, Type),
     Move(String),
+    Todo(String),
 }
 
 pub fn translate_operand<'tcx>(
@@ -44,9 +46,13 @@ pub fn translate_operand<'tcx>(
 
             match evaluated {
                 ConstValue::Scalar(scalar) => translate_scalar(scalar, const_ty, fn_ctx, proj),
-                ConstValue::Slice { data, meta } => todo!(),
-                ConstValue::Indirect { alloc_id, offset } => todo!(),
-                ConstValue::ZeroSized => todo!(),
+                _ => Op::Todo(format!(
+                    "Unsupported constant value: {:?} for type {:?}",
+                    evaluated, const_ty
+                )),
+                // ConstValue::Slice { data, meta } => todo!(),
+                // ConstValue::Indirect { alloc_id, offset } => todo!(),
+                // ConstValue::ZeroSized => todo!(),
             }
         }
     }

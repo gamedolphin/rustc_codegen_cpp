@@ -28,10 +28,18 @@ pub const CHECKED_MUL: &str = r#"
     }()
 "#;
 
+pub const FAT_PTR: &str = r#"
+struct FatPtr {
+    const void* data;
+    void* fn;
+};
+"#;
+
 pub fn get_inbuilt_functions() -> Vec<String> {
     vec![
         CHECKED_ADD.to_string(),
         CHECKED_SUB.to_string(),
         CHECKED_MUL.to_string(),
+        FAT_PTR.to_string(),
     ]
 }

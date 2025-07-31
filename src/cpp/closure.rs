@@ -3,12 +3,14 @@ use rustc_type_ir::ClosureArgs;
 
 use crate::cpp::{
     fields::get_field_offsets,
+    function::get_lines,
     typ::{get_type, get_type_hash},
 };
 
 use super::{
     function::{FunctionContext, FunctionSignature},
     project::Project,
+    statements::Line,
     typ::{Type, TypeVal},
 };
 
@@ -16,13 +18,13 @@ use super::{
 pub struct Closure {
     pub signature: FunctionSignature,
     pub fields: Vec<(TypeVal, usize)>, // (type, offset)
-    pub body: Option<String>,
     pub size: usize,
     pub alignment: usize,
 }
 
 pub fn get_closure_type<'tcx>(
     hash: u128,
+    name: &str,
     closure: ClosureArgs<TyCtxt<'tcx>>,
     fn_ctx: &FunctionContext<'tcx>,
     tcx: TyCtxt<'tcx>,
@@ -53,6 +55,7 @@ pub fn get_closure_type<'tcx>(
         ty: output,
         debug: Some(format!("{:?}", sig.output())),
     };
+
     let fields: Vec<_> = closure
         .upvar_tys()
         .iter()
@@ -74,12 +77,11 @@ pub fn get_closure_type<'tcx>(
 
     let closure = Closure {
         signature: FunctionSignature {
-            name: "".to_string(), // closures dont have names
+            name: name.to_string(), // closures dont have names
             args: inputs,
             return_type: output,
         },
         fields,
-        body: None,
         size: layout.size.bytes_usize(),
         alignment: layout.align.abi.bytes_usize(),
     };
